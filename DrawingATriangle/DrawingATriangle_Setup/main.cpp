@@ -6,9 +6,13 @@
 #include <iostream>
 #include <stdexcept>
 
+// Enables use of  std::vector
+#include <vector>
+// Enables creating std::stringstream error messages for exceptions
+#include <sstream>
+
 // The cstdlib header provides the EXIT_SUCCESS and EXIT_FAILURE macros
 #include <cstdlib>
-
 
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
@@ -23,6 +27,29 @@ public:
         cleanup();
     }
 
+    // checks if required extensions (ie, GLFW extensions) are available
+    void checkRequiredExtensionsPresent(std::vector<VkExtensionProperties> availableExt, const char** requiredExt, int requiredExtCount) {
+        // Loop through the required extensions and...
+        for (int i = 0; i < requiredExtCount; ++i) {
+            bool extension_found = false;
+            // loop through the available extensions to see if there's a match
+            for (const auto& extension : availableExt) {
+                if (strcmp(requiredExt[i], extension.extensionName) == 0) {
+                    extension_found = true;
+                }
+            }
+            if (!extension_found) {
+                std::stringstream errorMessage;
+                errorMessage << "ERROR! Missing " << requiredExt[i] << "\n";
+                throw std::runtime_error(errorMessage.str().c_str());
+            }
+            else {
+                std::cout << requiredExt[i] << " extension found!\n";
+            }
+        }
+        std::cout << "\nExtension requirements fulfilled!" << std::endl;
+    }
+
 private:
     
     // private class member to store reference to window
@@ -30,9 +57,18 @@ private:
     // private class member to store the Vulkan instance
     VkInstance instance;
 
+
+    // calls funcs to initiate Vulkan objects
+    void initVulkan() {
+        // Very first thing to init Vulkan library is by creating an instance.
+        createInstance();
+    }
+
+    
+
     // The instance is connection b/w your app and the Vulkan library
     void createInstance() {
-        // first, fill in struct. Data is technicall optional, but may provide some useful information to the driver in order to optimize our specific app.
+        // first, fill in VkApplicationInfo struct. Data is technically optional, but may provide some useful information to the driver in order to optimize our specific app.
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         appInfo.pNext = nullptr;
@@ -43,7 +79,22 @@ private:
         appInfo.apiVersion = VK_API_VERSION_1_0;
         
 
-        // this next struct is NOT optional and tells the Vulkan driver which global extensions and validation layers we want to use.
+        // Retrieve a list of supported extensions before creating an instance. The function vkEnumerateInstanceExtensionProperties takes a ptr to a variable that stores the # of extensions and an array of VkExtensionProperties to store details of extensions. The first parameter is for filtering by a specific validation layer, which we'll ignore for now.
+        uint32_t extensionCount = 0;
+        // First, get # of extensions by leaving ptr to extension array empty
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
+        // Then, allocate an array using the retrieved size
+        std::vector<VkExtensionProperties> extensions(extensionCount);
+        // Finally, get the extension details with another call, this time passing in created array
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
+
+        // List all the available extensions
+        std::cout << "Available Vulkan extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        for (const auto& extension : extensions) {
+            std::cout << '\t' << extension.extensionName << '\n';
+        }
+
+        // This next struct is NOT optional and tells the Vulkan driver which global extensions and validation layers we want to use.
         VkInstanceCreateInfo createInfo{};  
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = &appInfo;
@@ -51,14 +102,23 @@ private:
         // GLFW has built-in func that returns the extensions it needs for Vulkan to interface with the window system.
         uint32_t glfwExtensionCount = 0;
         const char** glfwExtensions;
-        // Use the built-in func to get # extensions, and add it, and the extension names, to the struct
+        // Use the built-in func to get # extensions.
         glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+        // Print out the glfw extensions
+        std::cout << "Required GLFW extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        for (int i = 0; i < glfwExtensionCount; i++) {
+            std::cout << "\t" << glfwExtensions[i] << std::endl;
+        }
+        // Check if the GLFW extensions are included in the available extensions
+        checkRequiredExtensionsPresent(extensions, glfwExtensions, glfwExtensionCount);
 
+        // add # GLFW extensions, and the GLFW extension names, to the VkInstanceCreateInfo struct
         createInfo.enabledExtensionCount = glfwExtensionCount;
         createInfo.ppEnabledExtensionNames = glfwExtensions;
 
-        // Deternines the global validation layers to enable.
+        // Determines the global validation layers to enable.
         createInfo.enabledLayerCount = 0;
+        
 
         // We've now specified everything Vulkan needs to create an instance
         // The general pattern for object creation function paramers is
@@ -71,12 +131,7 @@ private:
 
     }
 
-    // calls funcs to initiate Vulkan objects
-    void initVulkan() {
-        // Very first thing to init Vulkan library is by creating an instance.
-        createInstance();
-
-    }
+  
 
     
 
@@ -105,6 +160,9 @@ private:
 
     // deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
+        // VkInstance should be destroyed right before program exits, ignore the optional callback param.
+        vkDestroyInstance(instance, nullptr);
+
         // Once window is closed, must destroy it.
         glfwDestroyWindow(window);
 
@@ -129,3 +187,4 @@ int main() {
 
     return EXIT_SUCCESS;
 }
+
