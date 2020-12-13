@@ -14,8 +14,20 @@
 // The cstdlib header provides the EXIT_SUCCESS and EXIT_FAILURE macros
 #include <cstdlib>
 
+
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
+
+// Add two configuration variables to specify the layers to enable...
+const std::vector<const char*> validationLayers = {
+    "VK_LAYER_KHRONOS_validation"
+};
+// ... and whether to enable them.
+#ifdef NDEBUG
+    const bool enableValidationLayers = false;
+#else
+    const bool enableValidationLayers = true;
+#endif
 
 // The program itself is wrapped into a class where we'll store the Vulkan objects as private class members and add funcs to initiate each of them, which will be called from the initVulkan func.
 class HelloTriangleApplication {
@@ -27,7 +39,46 @@ public:
         cleanup();
     }
 
-    // checks if required extensions (ie, GLFW extensions) are available
+    // Checks if the requested layers are available. Use in createInstance().
+    bool checkValidationLayerSupport() {
+        uint32_t layerCount;
+        // Get how many layers there are and then ...
+        vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+        // ... init an array with that size and then ...
+        std::vector<VkLayerProperties> availableLayers(layerCount);
+        /// ... fill up that array with the validation layers
+        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+
+        // List all the available layers
+        std::cout << "Available validation layers:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        for (const auto& layer : availableLayers) {
+            std::cout << '\t' << layer.layerName << '\n';
+        }
+
+        // Check if the layers defined for validationLayers variable exist in the available layers
+        for (const char* layerName : validationLayers) {
+            bool layerFound = false;
+
+            for (const auto& layerProperties : availableLayers) {
+                if (strcmp(layerName, layerProperties.layerName) == 0) {
+                    layerFound = true;
+                    break;
+                }
+            }
+            // If a layer isn't found, print to console. Error will be thrown in createInstance()
+            if (!layerFound) {
+                std::cout << "ERROR! Missing " << layerName << " layer\n";
+                
+            }
+            else {
+                std::cout << layerName << " found!\n";
+            }
+        }
+        std::cout << "\Validation layer requirements fulfilled!" << std::endl;
+        return true;
+    }
+
+    // Checks if required extensions (ie, GLFW extensions) are available
     void checkRequiredExtensionsPresent(std::vector<VkExtensionProperties> availableExt, const char** requiredExt, int requiredExtCount) {
         // Loop through the required extensions and...
         for (int i = 0; i < requiredExtCount; ++i) {
@@ -40,7 +91,7 @@ public:
             }
             if (!extension_found) {
                 std::stringstream errorMessage;
-                errorMessage << "ERROR! Missing " << requiredExt[i] << "\n";
+                std::cout << "ERROR! Missing " << requiredExt[i] << "\n";
                 throw std::runtime_error(errorMessage.str().c_str());
             }
             else {
@@ -49,6 +100,8 @@ public:
         }
         std::cout << "\nExtension requirements fulfilled!" << std::endl;
     }
+
+    
 
 private:
     
@@ -68,7 +121,13 @@ private:
 
     // The instance is connection b/w your app and the Vulkan library
     void createInstance() {
-        // first, fill in VkApplicationInfo struct. Data is technically optional, but may provide some useful information to the driver in order to optimize our specific app.
+
+        // First, check if the requested validation layers are available.
+        if (enableValidationLayers && !checkValidationLayerSupport()) {
+            throw std::runtime_error("ERROR! Validation layers requested, but not available!");
+        }
+
+        // Then, fill in VkApplicationInfo struct. Data is technically optional, but may provide some useful information to the driver in order to optimize our specific app.
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         appInfo.pNext = nullptr;
@@ -89,7 +148,7 @@ private:
         vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
 
         // List all the available extensions
-        std::cout << "Available Vulkan extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        std::cout << "\nAvailable Vulkan extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
         for (const auto& extension : extensions) {
             std::cout << '\t' << extension.extensionName << '\n';
         }
@@ -99,13 +158,22 @@ private:
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = &appInfo;
 
+        // Include validation layers if they are enabled
+        if (enableValidationLayers) {
+            createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+            createInfo.ppEnabledLayerNames = validationLayers.data();
+        }
+        else {
+            createInfo.enabledLayerCount = 0;
+        }
+
         // GLFW has built-in func that returns the extensions it needs for Vulkan to interface with the window system.
         uint32_t glfwExtensionCount = 0;
         const char** glfwExtensions;
         // Use the built-in func to get # extensions.
         glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
         // Print out the glfw extensions
-        std::cout << "Required GLFW extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        std::cout << "\nRequired GLFW extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
         for (int i = 0; i < glfwExtensionCount; i++) {
             std::cout << "\t" << glfwExtensions[i] << std::endl;
         }
