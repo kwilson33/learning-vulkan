@@ -29,6 +29,8 @@ const std::vector<const char*> validationLayers = {
     const bool enableValidationLayers = true;
 #endif
 
+
+
 // The program itself is wrapped into a class where we'll store the Vulkan objects as private class members and add funcs to initiate each of them, which will be called from the initVulkan func.
 class HelloTriangleApplication {
 public:
@@ -38,6 +40,29 @@ public:
         mainLoop();
         cleanup();
     }
+
+
+    // The vkCreateDebugUtilsMessengerEXT function isn't loaded by default, and this function looks up the address of it ourselves. This function is needed to setup the debug messenger, for validation layer purposes.
+    static VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
+        // Get the function address using vkGetInstanceProcAddr
+        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+
+        if (func != nullptr) {
+            return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+        }
+        else {
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        }
+    }
+    // Similarly, the vkCreateDebugUtilsMessengerEXT function needs to be explicitly loaded like vkCreateDebugUtilsMessengerEXT
+    static void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
+        // Get the function address using vkGetInstanceProcAddr
+        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (func != nullptr) {
+            func(instance, debugMessenger, pAllocator);
+        }
+    }
+
 
     // Checks if the requested layers are available. Use in createInstance().
     bool checkValidationLayerSupport() {
@@ -74,8 +99,51 @@ public:
                 std::cout << layerName << " found!\n";
             }
         }
-        std::cout << "\Validation layer requirements fulfilled!" << std::endl;
+        std::cout << "Validation layer requirements fulfilled!" << std::endl;
         return true;
+    }
+
+    // Add a static member function with PFN_vkDebugUtilsMessengerCallbackEXT prototype. The 'VKAPI_ATTR' and 'VKAPI_CALL' ensure the function has the right signature for Vulkan to call it.
+    // https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Validation_layers
+    // Returns a boolean that indicates if the Vulkan call that triggered the validation layer message should be aborrted.
+    static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
+        
+        // Print out the callback message
+        std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+
+        return VK_FALSE;
+    }
+
+    
+
+    // Returns the list of extensions based on whether validation layers are enabled or not.
+    // The GLFW extensions are always required, but the debug messenger extension is conditionally added.
+    std::vector<const char*> getAndCheckRequiredExtensions(std::vector<VkExtensionProperties> availableExtensions) {
+        // GLFW has built-in func that returns the extensions it needs for Vulkan to interface with the window system.
+        uint32_t glfwExtensionCount = 0;
+        const char** glfwExtensions;
+        // Use the built-in func to get # extensions.
+        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+        // Print out the glfw extensions
+        std::cout << "\nRequired GLFW extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        for (uint32_t i = 0; i < glfwExtensionCount; i++) {
+            std::cout << "\t" << glfwExtensions[i] << std::endl;
+        }
+
+        // Check if the GLFW extensions are included in the available extensions
+        checkRequiredExtensionsPresent(availableExtensions, glfwExtensions, glfwExtensionCount);
+
+        // Create a char* vector filled with the glfwExtensions array. Start from beginning of glfwExtensions, and go until end of the array.
+        std::vector<const char*> requiredExtensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+
+        // To set up a callback in the program to handle messages and associated details, have to setup a debug messenger with a callback using the VK_EXT_debug_utils extension (add using macro below)
+        if (enableValidationLayers) {
+            requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+        return requiredExtensions;
+
     }
 
     // Checks if required extensions (ie, GLFW extensions) are available
@@ -109,15 +177,47 @@ private:
     GLFWwindow* window;
     // private class member to store the Vulkan instance
     VkInstance instance;
+    // tell Vulkan about the callback function. Even this needs to be created and destroyed.
+    VkDebugUtilsMessengerEXT debugMessenger;
 
 
     // calls funcs to initiate Vulkan objects
     void initVulkan() {
         // Very first thing to init Vulkan library is by creating an instance.
         createInstance();
+        // Then, get the validation layers callback working by setting up the debug messenger
+        setupDebugMessenger();
     }
 
-    
+    // Extract population of the debug messenger into separate function.
+    void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
+        createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        // The message severity field lets you specify all the severity types you would like your callback to be called for
+        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        // The message type field lets you filter which types of messages your callback is notified about. 
+        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        // Specifies the pointer to the callback function
+        createInfo.pfnUserCallback = debugCallback;
+        // Optionally pass a pointer to the callback function via the pUserData parameter.
+        createInfo.pUserData = nullptr;
+    }
+
+    // Fill in a struct with details about the debug messenger and its callback 
+    void setupDebugMessenger() {
+        if (!enableValidationLayers) return;
+
+        // Create struct and populate
+        VkDebugUtilsMessengerCreateInfoEXT createInfo;
+        populateDebugMessengerCreateInfo(createInfo);
+
+        // Now, pass this struct to the vkCreateDebugUtilsMessengerEXT func to create the VkDebugUtilsMessengerEXT object. This function is not automatically loaded and must look up address ourselves, so I've created a proxy function to do that above the HelloTriangleApplication class definition.
+        // Since the debug messenger is specific to our Vulkan instance and its layers, it needs to be explicitly loaded.
+        if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to setup the debug messenger!");
+        }
+
+    }
 
     // The instance is connection b/w your app and the Vulkan library
     void createInstance() {
@@ -143,13 +243,13 @@ private:
         // First, get # of extensions by leaving ptr to extension array empty
         vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
         // Then, allocate an array using the retrieved size
-        std::vector<VkExtensionProperties> extensions(extensionCount);
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
         // Finally, get the extension details with another call, this time passing in created array
-        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
 
         // List all the available extensions
         std::cout << "\nAvailable Vulkan extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
-        for (const auto& extension : extensions) {
+        for (const auto& extension : availableExtensions) {
             std::cout << '\t' << extension.extensionName << '\n';
         }
 
@@ -167,26 +267,29 @@ private:
             createInfo.enabledLayerCount = 0;
         }
 
-        // GLFW has built-in func that returns the extensions it needs for Vulkan to interface with the window system.
-        uint32_t glfwExtensionCount = 0;
-        const char** glfwExtensions;
-        // Use the built-in func to get # extensions.
-        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-        // Print out the glfw extensions
-        std::cout << "\nRequired GLFW extensions:\n~~~~~~~~~~~~~~~~~~~~~~~~\n";
-        for (int i = 0; i < glfwExtensionCount; i++) {
-            std::cout << "\t" << glfwExtensions[i] << std::endl;
-        }
-        // Check if the GLFW extensions are included in the available extensions
-        checkRequiredExtensionsPresent(extensions, glfwExtensions, glfwExtensionCount);
+        // Get list of required GLFW extensions (and check if they are available), and add debug messenger extension if validation layers are enabled.
+        auto requiredExtensions = getAndCheckRequiredExtensions(availableExtensions);
 
-        // add # GLFW extensions, and the GLFW extension names, to the VkInstanceCreateInfo struct
-        createInfo.enabledExtensionCount = glfwExtensionCount;
-        createInfo.ppEnabledExtensionNames = glfwExtensions;
+        // add # extensions, and the extension names, to the VkInstanceCreateInfo struct
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size());
+        createInfo.ppEnabledExtensionNames = requiredExtensions.data();
 
-        // Determines the global validation layers to enable.
-        createInfo.enabledLayerCount = 0;
+
+        // Create an additional debug messenger so that we can debug any issues in the vkCreateInstance and vkDestroyInstance calls. Have to do this because the vkCreateDebugUtilsMessengerEXT call requires a valid instance to have been created and vkDestroyDebugUtilsMessengerEXT must be called before the instance is destroyed.
+        VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo;
         
+        // Add validation layer info the struct.
+        if (enableValidationLayers) {
+            createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+            createInfo.ppEnabledLayerNames = validationLayers.data();
+            // Populate the debug messenger meant specifically for testing vkCreateInstance and vkDestroyInstance by passing it as pNext to the createInfo struct. This is the only way to test those methods with a debug messenger for a Vulkan instance.
+            populateDebugMessengerCreateInfo(debugCreateInfo);
+            createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
+        }
+        else {
+            createInfo.enabledLayerCount = 0;
+            createInfo.pNext = nullptr;
+        }
 
         // We've now specified everything Vulkan needs to create an instance
         // The general pattern for object creation function paramers is
@@ -228,6 +331,11 @@ private:
 
     // deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
+        // Destroy the VkDebugUtilsMessengerEXT object
+        if (enableValidationLayers) {
+            DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
+        }
+
         // VkInstance should be destroyed right before program exits, ignore the optional callback param.
         vkDestroyInstance(instance, nullptr);
 
