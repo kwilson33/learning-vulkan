@@ -11,12 +11,26 @@
 // Enables creating std::stringstream error messages for exceptions
 #include <sstream>
 
+// Allows use of std::optional, a wrapper that contains no value until you assign something it.
+#include <optional>
+
 // The cstdlib header provides the EXIT_SUCCESS and EXIT_FAILURE macros
 #include <cstdlib>
 
 
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
+
+// This struct will hold queue families (almost all Vulkan commands are submitted to queues)
+struct QueueFamilyIndices {
+    // Need to use std::optional, because any int value could be a valid queue family, leaving no value to show an invalid family. So, using std::optional lets us check if there was any value assigned.
+    std::optional<uint32_t> graphicsFamily;
+
+    // Check if there was any value assigned to the queue family
+    bool isComplete() {
+        return graphicsFamily.has_value();
+    }
+};
 
 // Add two configuration variables to specify the layers to enable...
 const std::vector<const char*> validationLayers = {
@@ -28,6 +42,8 @@ const std::vector<const char*> validationLayers = {
 #else
     const bool enableValidationLayers = true;
 #endif
+
+    
 
 
 
@@ -173,12 +189,16 @@ public:
 
 private:
     
-    // private class member to store reference to window
+    // Private class member to store reference to window
     GLFWwindow* window;
-    // private class member to store the Vulkan instance
+    // Private class member to store the Vulkan instance
     VkInstance instance;
-    // tell Vulkan about the callback function. Even this needs to be created and destroyed.
+    // GPU that is picked is stored in this handle
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    // Tell Vulkan about the callback function. Even this needs to be created and destroyed.
     VkDebugUtilsMessengerEXT debugMessenger;
+
+    
 
 
     // calls funcs to initiate Vulkan objects
@@ -187,6 +207,83 @@ private:
         createInstance();
         // Then, get the validation layers callback working by setting up the debug messenger
         setupDebugMessenger();
+        // Pick a GPU that supports the features we need
+        pickPhysicalDevice();
+    }
+
+    // Look for and select a GPU in the system that supports the features we need
+    void pickPhysicalDevice() {
+        uint32_t deviceCount = 0;
+        // Query the # of devices and then ...
+        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+        // ... check if we should allocate an array and then ...
+        if (deviceCount == 0) {
+            throw std::runtime_error("ERROR! Failed to find GPUs with Vulkan support!");
+        }
+        // ... fill in vector to hold all of the VkPhysicalDevice handles
+        std::vector<VkPhysicalDevice> devices(deviceCount);
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+        // Evaluate each handle and see if suitable for operations we want to perform. Exit if one is found.
+        for (const auto& device : devices) {
+            if (isDeviceSuitable(device)) {
+                physicalDevice = device;
+                break;
+            }
+        }
+        // If no device is suitable, physicalDevice will stay as VK_NULL_HANDLE
+        if (physicalDevice == VK_NULL_HANDLE) {
+            throw std::runtime_error("ERROR! Failed to find a suitable GPU!");
+        }
+
+    }
+
+    // Check if device handle is suitable for operations we need
+    bool isDeviceSuitable(VkPhysicalDevice device) {
+        // Start by querying for some details. Basic properties like name, type, and supported Vulkan version can be gotten using vkGetPhysicalDeviceProperties
+        VkPhysicalDeviceProperties deviceProperties;
+        vkGetPhysicalDeviceProperties(device, &deviceProperties);
+        // To get optional features like texture compression, 64 bit floats, and multi viewport rendering (for VR) can be gotten using vkGetPhysicalDeviceFeatures
+        VkPhysicalDeviceFeatures deviceFeatures;
+        vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+
+
+        // Need to get all the  queue families are supported by the device ...
+        QueueFamilyIndices indices = findQueueFamilies(device);
+        // ... and if atleast one of the device families is valid (has value set).
+        return indices.isComplete();
+    }
+
+    // Find the queue families supported by the device and return them in a struct.
+    QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
+        QueueFamilyIndices indices;
+
+        // Assign index to queue families that could be found
+        uint32_t queueFamilyCount = 0;
+        // Get number of queue families ... 
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+        // ... create a vector with that size and ... 
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        // ... get the properties for the queue families.
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+
+        // Need to find atleast one queue family that supports VK_QUEUE_GRAPHICS_BIT
+        int i = 0;
+        for (const auto& queueFamily : queueFamilies) {
+            if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                indices.graphicsFamily = i;
+            }
+
+            // Early exit if a valid queue family is found.
+            if (indices.isComplete()) {
+                break;
+            }
+
+            i++;
+        }
+
+        return indices;
     }
 
     // Extract population of the debug messenger into separate function.
@@ -211,7 +308,7 @@ private:
         VkDebugUtilsMessengerCreateInfoEXT createInfo;
         populateDebugMessengerCreateInfo(createInfo);
 
-        // Now, pass this struct to the vkCreateDebugUtilsMessengerEXT func to create the VkDebugUtilsMessengerEXT object. This function is not automatically loaded and must look up address ourselves, so I've created a proxy function to do that above the HelloTriangleApplication class definition.
+        // Now, pass this struct to the vkCreateDebugUtilsMessengerEXT func to create the VkDebugUtilsMessengerEXT object. This function is not automatically loaded and must look up address ourselves, so I've created a proxy function to take care of that.
         // Since the debug messenger is specific to our Vulkan instance and its layers, it needs to be explicitly loaded.
         if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
             throw std::runtime_error("ERROR! Failed to setup the debug messenger!");
@@ -333,7 +430,7 @@ private:
     void cleanup() {
         // Destroy the VkDebugUtilsMessengerEXT object
         if (enableValidationLayers) {
-            DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
+            //DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
 
         // VkInstance should be destroyed right before program exits, ignore the optional callback param.
