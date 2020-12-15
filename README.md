@@ -9,4 +9,9 @@ I decided on December 11, 2020 to start learning Vulkan! Who knows where this jo
 
 ## Folders
 * **VulkanTest** contains the code from [this part](https://vulkan-tutorial.com/Development_environment#page_Setting-up-Visual-Studio) of the official Vulkan tutorial
-* **DrawingATriangle** contains the code from [this part](https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Base_code#page_General-structure) of the official Vulkan tutorial.
+* **DrawingATriangle** contains the code from [this part](https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Base_code#page_General-structure) of the official Vulkan tutorial. I split it up into sub-folders to mirror how the tutorial is set-up. Each folder (in descending order) builds upon each other. 
+   * DrawingATriangle_Setup
+   * DrawingATriangle_Presentation
+   * DrawingATriangle_GraphicsPipelineBasics
+   * DrawingATriangle_Drawing
+   * DrawingATriangle_SwapChainRecreation
