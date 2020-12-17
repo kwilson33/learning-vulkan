@@ -11,6 +11,8 @@
 #include <sstream>
 // Allows use of std::optional, a wrapper that contains no value until you assign something it.
 #include <optional>
+// Allows creating a set of all unique queue families that are necessary for the required queues.
+#include <set>
 // The cstdlib header provides the EXIT_SUCCESS and EXIT_FAILURE macros
 #include <cstdlib>
 
@@ -34,9 +36,12 @@ struct QueueFamilyIndices {
     // Need to use std::optional, because any int value could be a valid queue family, leaving no value to show an invalid family. So, using std::optional lets us check if there was any value assigned.
     std::optional<uint32_t> graphicsFamily;
 
-    // Check if there was any value assigned to the queue family
+    // It's possible that the queue families supporting drawign commands and the ones supporting presentation don't overlap. Must take this into account by checking both families.
+    std::optional<uint32_t> presentationFamily;
+
+    // Check if there was any value assigned to the queue families
     bool isComplete() {
-        return graphicsFamily.has_value();
+        return graphicsFamily.has_value() && presentationFamily.has_value();
     }
 };
 
@@ -58,12 +63,15 @@ private:
     VkInstance instance;
     // Tell Vulkan about the callback function. Even this needs to be created and destroyed.
     VkDebugUtilsMessengerEXT debugMessenger;
+    // Add a surface class member to help Vulkan interface with the window system
+    VkSurfaceKHR surface;
     // GPU that is picked is stored in this handle
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     // Logical device handle
     VkDevice device;
-    // Queues are automatically created with the logical device, but we need a handle to interface with them.
+    // Queues are automatically created with the logical device, but we need handles to interface with them.
     VkQueue graphicsQueue;
+    VkQueue presentationQueue;
 
 
 
@@ -89,6 +97,8 @@ private:
         createInstance();
         // Then, get the validation layers callback working by setting up the debug messenger
         setupDebugMessenger();
+        // Create a surface for Vulkan to interface with the window system.
+        createSurface();
         // Pick a GPU that supports the features we need
         pickPhysicalDevice();
         // Once the physical device is chosen, need to use a logical device to interface with it.
@@ -106,7 +116,6 @@ private:
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
-
         // Destroy the logical device which interacts with the chosen physical device. 
         vkDestroyDevice(device, nullptr);
 
@@ -114,6 +123,9 @@ private:
         if (enableValidationLayers) {
             DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
+         
+        // Destroy the surface created in createSurface()
+        vkDestroySurfaceKHR(instance, surface, nullptr);
 
         // VkInstance should be destroyed right before program exits, ignore the optional callback param.
         vkDestroyInstance(instance, nullptr);
@@ -123,7 +135,6 @@ private:
 
         // Terminate glfw itself
         glfwTerminate();
-
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -377,7 +388,18 @@ private:
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~ Surface Creation ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    // Creates a VkSurfaceKHR (based on system details like Windows vs Linux) for Vulkan to interface with the window system
+    void createSurface() {
+        // glfwCreateWindow surface takes care of platform specific instantiations of a VkSurfaceKHR surface. For example, on Windows this call will create a VkWin32SurfaceCreateInfoKHR  struct, fill it in with platform specific details, and then call vkCreateWin32SurfaceKHR(). On Linux, different methods will be used.
+        if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to create window surface!");
+        }
+
+    }
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     // ~~~~~~~~~~~~~~~~~~ Physical and Logical Devices ~~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -442,11 +464,18 @@ private:
         vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
 
 
-        // Need to find atleast one queue family that supports VK_QUEUE_GRAPHICS_BIT
+        // Need to find atleast one queue family that supports VK_QUEUE_GRAPHICS_BIT and supports presentation to a window surface
         int i = 0;
         for (const auto& queueFamily : queueFamilies) {
+            // Check for graphics support
             if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 indices.graphicsFamily = i;
+            }
+            // Check for presentation support
+            VkBool32 presentationSupport = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentationSupport);
+            if (presentationSupport) {
+                indices.presentationFamily = i;
             }
 
             // Early exit if a valid queue family is found.
@@ -465,28 +494,35 @@ private:
         // Get the indices of queue families for the physical device
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
-        VkDeviceQueueCreateInfo queueCreateInfo{};
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        // We only care about a queue with graphics capabilities right now.
-        queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
-        queueCreateInfo.queueCount = 1;
+        // Create a set of all unique queue families that are necessary for the required queues. Also create a vector for the createInfo structs needed for each.
+        std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+        std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentationFamily.value()};
 
-        // Vulkan lets you assign priorties (0.0 to 1.0) to queues to influence scheduling of command buffer execution. Required even if there is only a single queue.
+        // Vulkan lets you assign priorties (0.0 to 1.0) to queues to influence scheduling of command buffer execution. Required even if there is only a single queue. Loop over the set of unique queue families and create structs for each, and push to vector of createInfo structs.
         float queuePriority = 1.0f;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        for (uint32_t queueFamiliy : uniqueQueueFamilies) {
+            VkDeviceQueueCreateInfo queueCreateInfo{};
+            queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo.queueFamilyIndex = queueFamiliy;
+            queueCreateInfo.queueCount = 1;
+            queueCreateInfo.pQueuePriorities = &queuePriority;
+            queueCreateInfos.push_back(queueCreateInfo);
+        }
+
 
         // Next info we need to specify is the set of physical device features we'll be using
         VkPhysicalDeviceFeatures deviceFeatures{};
+        // blank for now
 
         // With those 2 structs in place, can start filling in the main VkDeviceCreateInfo struct
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        // pass in the queue struct ...
-        createInfo.pQueueCreateInfos = &queueCreateInfo;
-        createInfo.queueCreateInfoCount = 1;
+        // pass in the size and data from the VkDeviceQueueCreateInfo structs ...
+        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
+        createInfo.pQueueCreateInfos = queueCreateInfos.data();
         // ... and the physical device features struct
         createInfo.pEnabledFeatures = &deviceFeatures;
-
+        
         createInfo.enabledExtensionCount = 0;
 
         // New versions of Vulkan ignore distinctions b/w instance and device specific validation layers. Specifying here to be compatible with older implementations.
@@ -503,8 +539,9 @@ private:
             throw std::runtime_error("ERROR! Failed to create a logical device!");
         }
 
-        // Retrieve queue handle for the graphics queue family. The params are the logical device, the queue family, the queue index (set to 0 because only creating 1 handle from this family), and pointer to store the queue handle in.
+        // Retrieve queue handles for the graphics and presentation queue families. The params are the logical device, the queue family, the queue index (set to 0 because only creating 1 handle from this family), and pointer to store the queue handle in.
         vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+        vkGetDeviceQueue(device, indices.presentationFamily.value(), 0, &graphicsQueue);
 
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
