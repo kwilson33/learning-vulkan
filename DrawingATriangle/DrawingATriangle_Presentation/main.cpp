@@ -85,9 +85,10 @@ private:
     VkQueue graphicsQueue;
     VkQueue presentationQueue;
 
-    // Handles for the swap chain, images stored in the swap chain, the image format, and the swap extent (resolution) of the images
+    // Handles for the swap chain, images stored in the swap chain, image views for images in the swap chain, the image format, and the swap extent (resolution) of the images
     VkSwapchainKHR swapChain;
     std::vector<VkImage> swapChainImages;
+    std::vector<VkImageView> swapChainImageViews;
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
 
@@ -112,21 +113,31 @@ private:
     void initVulkan() {
         // Very first thing to init Vulkan library is by creating an instance.
         createInstance();
+        std::cout << "\n{########## Vulkan instance created. ##########}\n";
 
         // Then, get the validation layers callback working by setting up the debug messenger
         setupDebugMessenger();
+        std::cout << "\n{########## Debug messenger setup. ##########}\n";
 
         // Create a surface for Vulkan to interface with the window system.
         createSurface();
+        std::cout << "\n{########## VkSurfaceKHR object created. ##########}\n";
 
         // Pick a GPU that supports the features we need
         pickPhysicalDevice();
+        std::cout << "\n{########## Physical device picked. ##########}\n";
 
         // Once the physical device is chosen, need to use a logical device to interface with it.
         createLogicalDevice();
+        std::cout << "\n{########## Logical device created. ##########}\n";
 
         // Once the logical device is created to interface with a physical device, and after we've confirmed a swap chain is available (during isDeviceSuitable()), create a swap chain with the best possible settings (surface format, presentation mode, and swap extent)
         createSwapChain();
+        std::cout << "\n{########## Swap chain created. ##########}\n";
+
+        // Once the swap chain is created, create image views for the images stored within.
+        createImageViews();
+        std::cout << "\n{########## Image views created. ##########}\n";
     }
 
 
@@ -140,6 +151,11 @@ private:
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
+        // Destroy the VkImageView objects used for the VkImage objects within the swap chain.
+        for (auto imageView : swapChainImageViews) {
+            vkDestroyImageView(device, imageView, nullptr);
+        }
+
         // Destroy the swap chain before you destroy the logical device (since the swap chain is used by the logical device).
         vkDestroySwapchainKHR(device, swapChain, nullptr);
 
@@ -417,7 +433,7 @@ private:
 
 
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~ Surface amd Swap Chain ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~ Surface, Swap Chain, and Image Views ~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     // Creates a VkSurfaceKHR (based on system details like Windows vs Linux) for Vulkan to interface with the window system
@@ -530,14 +546,14 @@ private:
 
 
 
-    // Finally, create the swap chain for rendered images to be sent to and for presenting images to the window system using all the best settings found above.
+    // Next, create the swap chain for rendered images to be sent to and for presenting images to the window system using all the best settings found above.
     void createSwapChain() {
         // Fill in the swap chain struct with capabilities, surface formats, and presentation modes.
         SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
 
         // Once the swap chain struct is created, choose the best surface format, the best presentation mode, and the correct swap extent.
         VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
-        std::cout << "Surface Format: " << surfaceFormat.format << ", Color Space: " << surfaceFormat.colorSpace << "\n";
+        std::cout << "\nSurface Format: " << surfaceFormat.format << ", Color Space: " << surfaceFormat.colorSpace << "\n";
         VkPresentModeKHR presentationMode = chooseSwapPresentationMode(swapChainSupport.presentationModes);
         std::cout << "Presentation Mode: " << presentationMode << "\n";
         VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
@@ -611,6 +627,44 @@ private:
         swapChainImageFormat = surfaceFormat.format;
         swapChainExtent = extent;
     }
+
+
+    // Finally, create VkImageViews for interfacing with the VkImage objs within the swap chain
+    void createImageViews() {
+        // Resize to the # of swap chain VkImage objects
+        swapChainImageViews.resize(swapChainImages.size());
+
+        // Iterate over the swap chain images
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+           // Create a VkImageView object for each VkImage
+            VkImageViewCreateInfo createInfo{};
+            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            createInfo.image = swapChainImages[i];
+
+            // The viewType and format fields specify how the image should be interpreted, for example 1D textures, 2D textures, 3D textures, and cube maps, and in which format (color format and colorspace)
+            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            createInfo.format = swapChainImageFormat;
+
+            // The components field allows you to 'swizzle' color channels around. For example, you can map all of the channels to the red channel for a monochrome texture. We'll stick to the default mapping.
+            createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+            // The subresourceRange field describes what the image's purpose is and which part should be accessed. Our images will be used as color targets w/o any mipmapping levels or multiple layers
+            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            createInfo.subresourceRange.baseMipLevel = 0;
+            createInfo.subresourceRange.levelCount = 1;
+            createInfo.subresourceRange.baseArrayLayer = 0;
+            createInfo.subresourceRange.layerCount = 1;
+
+            // Finally, create the VkImageViews with the creation info
+            if (vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS) {
+                throw std::runtime_error("ERROR! Failed to create image views!");
+            }
+        }
+    }
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
@@ -737,7 +791,7 @@ private:
         // If all the required extensions were present in the available extensions, this will be true.
         if (requiredExtensions.empty())
         {
-            std::cout << "Physical device extension requirements met!" << "\n\n";
+            std::cout << "Physical device extension requirements met!" << "\n";
         }
         return requiredExtensions.empty();
     }
@@ -817,4 +871,3 @@ int main() {
 
     return EXIT_SUCCESS;
 }
-
