@@ -11,6 +11,8 @@
 #include <cstdlib>      // Provides the EXIT_SUCCESS and EXIT_FAILURE macros
 #include <cstdint>      // Necessary for UINT32_MAX
 #include <algorithm>    // Allows use of min and max functions
+#include <fstream>      // Used for loading in binary SPIR-V data
+
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -30,6 +32,7 @@ const bool enableValidationLayers = true;
 const std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
+
 
 // This struct will hold queue families (almost all Vulkan commands are submitted to queues)
 struct QueueFamilyIndices {
@@ -56,6 +59,8 @@ struct SwapChainSupportDetails {
         return !formats.empty() && !presentationModes.empty();
     }
 };
+
+
 
 
 // The program itself is wrapped into a class where we'll store the Vulkan objects as private class members and add funcs to initiate each of them, which will be called from the initVulkan func.
@@ -852,16 +857,99 @@ private:
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Shaders ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    /* Helper function to load in the binary SPIR-V shader data. This function
+    will read all of the bytes from the specified file and retuern them in a byte
+    array managed by std::vector.*/
+    static std::vector<char> readShaderFile(const std::string& filename) {
+        /* Open the file with two flags. ate flag means start reading at end of file so
+        * we can get the size of the file. binary flag means read the file as binary.*/
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+        if (!file.is_open()) {
+            throw std::runtime_error("ERROR! Failed to open file!");
+        }
+
+        // Use the pointer at end of file to get the size & allocate a buffer.
+        size_t fileSize = (size_t)file.tellg();
+        std::cout << "\n" << filename << " size is " << fileSize << " bytes.\n";
+        std::vector<char> buffer(fileSize);
+
+        // Go back to beginning of file and read all of the bytes at once.
+        file.seekg(0);
+        file.read(buffer.data(), fileSize);
+
+        // Close the file and return the buffer.
+        file.close();
+        return buffer;
+    }
+
+    /* Take a buffer with the bytecode and create a shader module. They are just a thin
+     wrapper around shader bytecode.*/
+    VkShaderModule createShaderModule(const std::vector<char>& code) {
+        // Creating a shader module requires only the bytecode and the length of it.
+        VkShaderModuleCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = code.size();
+        /* The bytecode size is in bytes, but the bytecode ptr is uint32_t intead of
+        a char pointer, so have to cast the ptr to uint32_t. Also need to ensure the data satisfies the data
+        alignment requirements. The data stored in std::vector already ensures this.*/
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+        VkShaderModule shaderModule;
+        if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to create shader module!");
+        }
+       
+        return shaderModule;
+    }
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~ Graphics Pipeline ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    // Create the pipeline for input data to go into, get processed, and drawn to the window system
+    // Create the pipeline for input data to go into, get processed, and drawn to the window system.
     void createGraphicsPipeline() {
+        // Read in the vertex and fragment shader bytecode. 
+        auto vertShaderCode = readShaderFile("shaders/vert.spv");
+        auto fragShaderCode = readShaderFile("shaders/frag.spv");
 
+        // Store the bytecode in a thin wrapper (shader module)
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        std::cout << "\nVertex shader module created.\n";
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+        std::cout << "Fragment shader module created.\n";
+        
+        // To actually use the shaders, need to assign them to a specific pipeline stage through structs.
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        // Tell Vulkan which pipeline stage the shader is going to be used.
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        // Specify the shader module containing the code.
+        vertShaderStageInfo.module = vertShaderModule;
+        // Specify the function to invoke, known as the entrypoint.
+        vertShaderStageInfo.pName = "main";
+        // This field allows you to specify values for shader constants. More efficitent than configuring the shader during render time.
+        vertShaderStageInfo.pSpecializationInfo = nullptr;
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        // Store the shader structs in an array.
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+        /* Destroy the shader modules as soon as pipeline creation is finished,
+        because the important bytecode in them has been compiled and linked. */
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 };
 
 int main() {
