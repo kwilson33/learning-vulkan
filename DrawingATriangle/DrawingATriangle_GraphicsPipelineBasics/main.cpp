@@ -89,15 +89,18 @@ private:
     // Queues are automatically created with the logical device, but we need handles to interface with them.
     VkQueue graphicsQueue;
     VkQueue presentationQueue;
-    // Store the pipeline layout, which is used to pass in uniform values in shaders for example, in this handle.
-    VkPipelineLayout pipelineLayout;
-
+    
     // Handles for the swap chain, images stored in the swap chain, image views for images in the swap chain, the image format, and the swap extent (resolution) of the images
     VkSwapchainKHR swapChain;
     std::vector<VkImage> swapChainImages;
     std::vector<VkImageView> swapChainImageViews;
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
+
+    // Store the render pass object in this handle.
+    VkRenderPass renderPass;
+    // Store the pipeline layout, which is used to pass in uniform values in shaders for example, in this handle.
+    VkPipelineLayout pipelineLayout;
 
 
     // ~~~~~~~~~~~~~~~ Initialization, Main loop, & Cleanup ~~~~~~~~~~~~~~~~~~~
@@ -146,6 +149,10 @@ private:
         createImageViews();
         std::cout << "\n{########## Image views created. ##########}\n";
 
+        // Tell Vulkan about the framebuffer attachments that will be used while rendering through a render pass object.
+        createRenderPass();
+        std::cout << "\n{########## Render pass created. ##########}\n";
+
         // Now that the Image views are created, there needs to be a pipeline the input data goes through
         createGraphicsPipeline();
         std::cout << "\n{########## Graphics pipeline created. ##########}\n";
@@ -164,6 +171,9 @@ private:
     void cleanup() {
         // Destroy the pipeline layour that is used for uniform values and push constants
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+
+        // Destroy the render pass object which describes to Vulkan about framebuffer attachments and how to handle data.
+        vkDestroyRenderPass(device, renderPass, nullptr);
 
         // Destroy the VkImageView objects used for the VkImage objects within the swap chain.
         for (auto imageView : swapChainImageViews) {
@@ -861,6 +871,68 @@ private:
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Render Pass ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    /*Create a render pass object to tell Vulkan about the framebuffer attachments that will be used while rendering. Need to specify
+    how many color & depth buffers there will be, how many samples to use for each of them, and how
+    their contents should be handled throughout the rendering operations.*/
+    void createRenderPass() {
+        // For this tutorial, just need a single color buffer attachment represented by one of the images from the swap chain.
+        VkAttachmentDescription colorAttachment{};
+        // Format should match format of swap chain images. Samples is for multisampling.
+        colorAttachment.format          = swapChainImageFormat;
+        colorAttachment.samples         = VK_SAMPLE_COUNT_1_BIT;
+        /*These determine what to do with the color and depth data in the attachment before rendering and after rendering. For loadOp,
+         we will clear the framebuffer to black before drawing a new frame. For storeOp, we will store data memory so it
+         can be read later and drawn to screen.*/
+        colorAttachment.loadOp          = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp         = VK_ATTACHMENT_STORE_OP_STORE;
+        // Applies to stencil data, which we don't care about.
+        colorAttachment.stencilLoadOp   = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp  = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        /*The initial layout specifies which layout the image will have before the render pass
+        begins. The final layout specifies the layour to automatically transition to when the render
+        pass finishes. Using VK_IMAGE_LAYOUT_UNDEFINED for initial layout means we don't care what previous
+        layout the image was in. This also means the contents of the image aren't guaranteeed to be
+        preserved (doesn't matter b/c we're clearing it anyway). Using VK_IMAGE_LAYOUT_PRESENT_SRC_KHR for
+        final layout specifies we want the image to be presented in the swap chain after the render pass.*/
+        colorAttachment.initialLayout   = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout     = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        /*A single render pass can consist of multiple subpasses, which are subsequent rendering
+        operations that depend on the contents of framebuffers in previous passes. Can be used to apply
+        post processing effects. Can group these multiple subpasses (or just one) into one render pass, and Vulkan will
+        reorder the operations and conserve mem bandwiddth for maybe better perf. Every subpass references
+        one or more attachments (one of which we created above). These references are structs themselves.*/
+        VkAttachmentReference colorAttachmentRef{};
+        // attachment specifies which attachment to reference by its index
+        colorAttachmentRef.attachment = 0;
+        // layout specifies which layout we would like the attachment to have during a subpass that uses this reference. We intend to use the attachment to function as a color buffer.
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        /*The subpass is described using another structure. The subpass is what 
+        will use the color attachment through the attachment reference created above*/
+        VkSubpassDescription subpass{};
+        // Be explicit about this subpass being a graphics subpass.
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        // The index of the attachment in the pColorAttachments array is referenced in the FS with the "layout(location = 0) out vec4 outColor" directive
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorAttachmentRef;
+
+        // Now that the attachment and a basic subpass referencing it are made, can create the render pass itself.
+        VkRenderPassCreateInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &colorAttachment;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+
+        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to create render pass!");
+        }
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Shaders ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
