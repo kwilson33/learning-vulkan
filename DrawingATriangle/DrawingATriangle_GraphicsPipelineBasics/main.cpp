@@ -101,6 +101,8 @@ private:
     VkRenderPass renderPass;
     // Store the pipeline layout, which is used to pass in uniform values in shaders for example, in this handle.
     VkPipelineLayout pipelineLayout;
+    // Store the graphics pipeline in this handle.
+    VkPipeline graphicsPipeline;
 
 
     // ~~~~~~~~~~~~~~~ Initialization, Main loop, & Cleanup ~~~~~~~~~~~~~~~~~~~
@@ -169,7 +171,10 @@ private:
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
-        // Destroy the pipeline layour that is used for uniform values and push constants
+        // Destroy the graphics pipeline.
+        vkDestroyPipeline(device, graphicsPipeline, nullptr);
+
+        // Destroy the pipeline layout that is used to send uniform values and push constants to the graphics pipeline.
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 
         // Destroy the render pass object which describes to Vulkan about framebuffer attachments and how to handle data.
@@ -314,7 +319,7 @@ private:
 
 
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~ Vulkan Instance and Surface ~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~ Vulkan Instance and Surface ~~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     // The instance is connection b/w your app and the Vulkan library.
@@ -906,26 +911,26 @@ private:
         one or more attachments (one of which we created above). These references are structs themselves.*/
         VkAttachmentReference colorAttachmentRef{};
         // attachment specifies which attachment to reference by its index
-        colorAttachmentRef.attachment = 0;
+        colorAttachmentRef.attachment   = 0;
         // layout specifies which layout we would like the attachment to have during a subpass that uses this reference. We intend to use the attachment to function as a color buffer.
-        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachmentRef.layout       = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         /*The subpass is described using another structure. The subpass is what 
         will use the color attachment through the attachment reference created above*/
         VkSubpassDescription subpass{};
         // Be explicit about this subpass being a graphics subpass.
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
         // The index of the attachment in the pColorAttachments array is referenced in the FS with the "layout(location = 0) out vec4 outColor" directive
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorAttachmentRef;
+        subpass.colorAttachmentCount    = 1;
+        subpass.pColorAttachments       = &colorAttachmentRef;
 
         // Now that the attachment and a basic subpass referencing it are made, can create the render pass itself.
         VkRenderPassCreateInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassInfo.attachmentCount = 1;
-        renderPassInfo.pAttachments = &colorAttachment;
-        renderPassInfo.subpassCount = 1;
-        renderPassInfo.pSubpasses = &subpass;
+        renderPassInfo.sType            = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount  = 1;
+        renderPassInfo.pAttachments     = &colorAttachment;
+        renderPassInfo.subpassCount     = 1;
+        renderPassInfo.pSubpasses       = &subpass;
 
         if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
             throw std::runtime_error("ERROR! Failed to create render pass!");
@@ -1201,6 +1206,41 @@ private:
         std::cout << "Pipeline layout created.\n";
         // ##########################################
 
+        // ####### Putting it all together  #########
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        // Start by referencing the array of VkPipelineShaderStageCreateInfo structs.
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        // Then reference all of the structs described during the fixed-function stage.
+        pipelineInfo.pVertexInputState      = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState    = &inputAssembly;
+        pipelineInfo.pViewportState         = &viewPortState;
+        pipelineInfo.pRasterizationState    = &rasterizer;
+        pipelineInfo.pMultisampleState      = &multisampling;
+        pipelineInfo.pDepthStencilState     = nullptr;           // Optional
+        pipelineInfo.pColorBlendState       = &colorBlending;
+        pipelineInfo.pDynamicState          = nullptr;           // Optional
+        // Next is the pipeline layout, a Vulkan handle rather than a struct pointer
+        pipelineInfo.layout                 = pipelineLayout;
+        // Then, reference the render pass and the index of the subpass where the graphics pipeline will be used.
+        pipelineInfo.renderPass             = renderPass;
+        pipelineInfo.subpass                = 0;
+        /* Vulkan lets you create a new graphics pipeline by deriving from an existing pipeline.
+        The idea is it's less expensive to setup pipelines when they have alot of functionality in common with 
+        an existing one. Can either specify the handle of an existing pipeline or reference another pipeline
+        that us about to be created by index.*/
+        pipelineInfo.basePipelineHandle     = VK_NULL_HANDLE;    // Optional
+        pipelineInfo.basePipelineIndex      = -1;                // Optional
+
+        /* Finally, create the pipeline. More params than the usual Vulkan object creation. Designed to take multiple
+        VkGraphicsPipelineCreateInfo objects and create multiple VkPipeline objects in one call. The second param references
+        an optional VkPipelineCache object, used to store and reuse data relevant to pipeline creation across multiple calls to vkCreateGraphicsPipelines()
+        and even across program executions if the cache is stored in a file.*/
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to create graphics pipeline!");
+        }
+        // ##########################################
 
         /* Destroy the shader modules as soon as pipeline creation is finished,
         because the important bytecode in them has been compiled and linked. */
