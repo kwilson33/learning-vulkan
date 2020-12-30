@@ -110,7 +110,8 @@ private:
     // Store all of the commands buffers in a command pool. They manage the memory that is used to store the buffers.
     VkCommandPool commandPool;
 
-
+    // Store a command buffer for every image in the swap chain.
+    std::vector<VkCommandBuffer> commandBuffers;
 
 
 
@@ -171,6 +172,14 @@ private:
         // Now, create framebuffers so the render pass can get the attachments from the swapchain.
         createFramebuffers();
         std::cout << "\n{########## Framebuffers created. ##########}\n";
+
+        // Create a command pool to hold command buffer objects.
+        createCommandPool();
+        std::cout << "\n{########## Command pool created. ##########}\n";
+
+        // Create a command pool to hold command buffer objects.
+        createCommandBuffers();
+        std::cout << "\n{########## Command buffers created. ##########}\n";
     }
 
 
@@ -184,6 +193,8 @@ private:
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
+        // Destroy the command pool which holds the command buffers.
+        vkDestroyCommandPool(device, commandPool, nullptr);
 
         // Destroy all the framebuffers that reference image views which describe attachments needed for the render pass.
         for (auto framebuffer : swapChainFramebuffers) {
@@ -1268,9 +1279,10 @@ private:
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~ Framebuffers ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~ Framebuffers and Command buffers ~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     
+    // Create framebuffers to reference image views that hold attachment information.
     void createFramebuffers() {
         // There needs to be a framebuffer for each image view in the swapchain.
         swapChainFramebuffers.resize(swapChainImageViews.size());
@@ -1292,6 +1304,86 @@ private:
 
             if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS) {
                 throw std::runtime_error("ERROR! Failed to create framebuffer!");
+            }
+        }
+    }
+
+
+    // Create the command pool, which holds the command buffers
+    void createCommandPool() {
+        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        // Each command pool can only allocate CBs that are submitted on single type of queue. We're going to record commands for drawing.
+        poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+        poolInfo.flags            = 0;         // Optional
+
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to create command pool!");
+        }
+    }
+
+    // Create command buffers to hold commands, like drawing commands
+    void createCommandBuffers() {
+        commandBuffers.resize(swapChainFramebuffers.size());
+
+        // Allocate a bunch of command buffers at once, based on the number of framebuffers. You need to record a command buffer for every image in the swap chain.
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType                 = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool           = commandPool;
+        // Primary or Secondary. Secondary means cannot be submitted directly to the queue for execution but can be called from primary command buffers. Primary means they can be submitted to the queue for execution, but cant be called from other command buffers.
+        allocInfo.level                 = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount    = (uint32_t)commandBuffers.size();
+
+        if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data
+        ()) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to allocate command buffers!");
+        }
+
+        // Now, start 'recording' each command buffer with a small VkCommandBufferBeginInfo struct which specifies some details about the usage of this specific command buffer. Then, start the render pass to fill in the command buffer with more info.
+        for (size_t i = 0; i < commandBuffers.size(); i++){
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType             = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags             = 0;       // Optional
+            beginInfo.pInheritanceInfo  = nullptr; // Optional. Only relevant for secondary command buffers.
+
+            if (vkBeginCommandBuffer(commandBuffers[i], &beginInfo) != VK_SUCCESS) {
+                throw std::runtime_error("ERROR! Failed to begin recording command buffer!");
+            }
+
+            // Drawing starts by beginning the render pass. The render pass will help fill the command buffers with commands.
+            VkRenderPassBeginInfo renderPassInfo{};
+            renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            renderPassInfo.renderPass = renderPass;
+            // We created a framebuffer for each swap chain image that specifies a color attachment.
+            renderPassInfo.framebuffer = swapChainFramebuffers[i];
+            // Define the size of the render area. The render area defines where shader loads and stores will take place.
+            renderPassInfo.renderArea.offset = { 0, 0 };
+            renderPassInfo.renderArea.extent = swapChainExtent;
+            // Define the clear value to use when clearing the screen. This is black with 100% opacity.
+            VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+            renderPassInfo.clearValueCount = 1;
+            renderPassInfo.pClearValues = &clearColor;
+
+            // Begin the render pass and begin recording commands! The final param regards primary vs secondary command buffers.
+            vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+            
+            // Now, bind the graphics pipeline to each command buffer. 
+            vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+            // We've now told Vulkan which operations to execute in the graphics pipeline and which attachment to use in the fragment shader. So finally tell it to dtaw a triangle.
+
+            // A bit anticlimactic, because all of the info was specified in advance. The params are the CB, vertex count, instance count (1 if not doing that), first vertex (offset in vertex buffer), first instance (offset for instanced rendering)
+            vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+
+            // Finally, end the render pass and ...
+            vkCmdEndRenderPass(commandBuffers[i]);
+
+            // ... end the command buffer it's done recording commands
+            if (vkEndCommandBuffer(commandBuffers[i]) != VK_SUCCESS) {
+                throw std::runtime_error("ERROR! Failed to record command buffer!");
             }
         }
     }
