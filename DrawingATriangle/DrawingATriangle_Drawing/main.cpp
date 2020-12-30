@@ -113,6 +113,10 @@ private:
     // Store a command buffer for every image in the swap chain.
     std::vector<VkCommandBuffer> commandBuffers;
 
+    // We need one sem to signal that an image has been gotten and is ready for rendering, and another to signal that rendering has finisehed and presentation can happen.
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+
 
 
     // ~~~~~~~~~~~~~~~ Initialization, Main loop, & Cleanup ~~~~~~~~~~~~~~~~~~~
@@ -180,6 +184,10 @@ private:
         // Create a command pool to hold command buffer objects.
         createCommandBuffers();
         std::cout << "\n{########## Command buffers created. ##########}\n";
+
+        // Create semaphores to sync queue operations of draw commands and presentation.
+        createSemaphores();
+        std::cout << "\n{########## Semaphores created. ##########}\n";
     }
 
 
@@ -188,11 +196,16 @@ private:
         // loops and checks for events like pressing the Close/X button.
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+            drawFrame();
         }
     }
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
+        // Destroy the semaphores for syncing operations across command queues.
+        vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+        vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+
         // Destroy the command pool which holds the command buffers.
         vkDestroyCommandPool(device, commandPool, nullptr);
 
@@ -954,6 +967,13 @@ private:
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &colorAttachmentRef;
 
+        // Create a subpass dependecy to make sure the built-in dependency that takes care of the transition at the start of the render pass doesn't assume the the transition occurs at the start of the pipeline. We haven't gotten an image at this point, so we have to make a subpass dependency.
+        VkSubpassDependency dependency{};
+        // The first 2 fields specify the indices of the dependency and the dependent subpass. Using the special value below refers to the implicit subpass before or after the render pass depending on whether you set it as the src or dst. 0 refers to our subpass, which is the first and only one. Setting these values means we are using the implicit subpass before, and the destination is our subpass.
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+
+
         // Now that the attachment and a basic subpass referencing it are made, can create the render pass itself.
         VkRenderPassCreateInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -1279,7 +1299,7 @@ private:
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    // ~~~~~~~~~~~~~~~ Framebuffers and Command buffers ~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~ Framebuffers and Command buffers ~~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     
     // Create framebuffers to reference image views that hold attachment information.
@@ -1388,6 +1408,59 @@ private:
         }
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+    // ~~~~~~~~~~~~~~~~~~~~~ Semaphores & Drawing ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    // Create semaphores for syncing up operations across command queues (drawing and presentation)
+    void createSemaphores() {
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS || vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to create semaphores!");
+        }
+    }
+
+    // Get image from swap chain, exec the command buffer with that image, and return the image to the swap chain for presentation
+    void drawFrame() {
+        // 1) Acquire image from swap chain. 
+
+        // The third param is the timeout in ns for an image to become available. Using the max value of 64 bit unsigned int disables the timeout. The 4th and 5th params are for semaphores and fences. The last param refers to a variable to output the index of a VkImage in the swapChainImages array. This helps with picking the right command buffer.
+        uint32_t imageIndex;
+        vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+        // 2) Specify and submit the command buffer
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        // First 3 params specify which sems to wait on before exec begins and which stages of the pipeline to wait. We want to wait with writing colors to the image until it's ready, so we specify the stage of the pipeline that writes to the color attachment. Each entry in waitStages corresponds to the sem with same index in pWaitSemaphores.
+        VkSemaphore waitSemaphores[]        = { imageAvailableSemaphore };
+        VkPipelineStageFlags waitStages[]   = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+        submitInfo.waitSemaphoreCount       = 1;
+        submitInfo.pWaitSemaphores          = waitSemaphores;
+        submitInfo.pWaitDstStageMask        = waitStages;
+        // Specify which command bufs to actually submit for execution. We want to submit the command buf that binds the swap chain image we just got as color attachment.
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+        // Specify which sem to signal once the command bufs have finished.
+        VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = signalSemaphores;
+
+        // Then, submit the command buffer. Last param is for an optional fence.
+        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+            throw std::runtime_error("ERROR! Failed to submit draw command buffer!");
+        }
+        
+
+
+
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 };
 
 int main() {
