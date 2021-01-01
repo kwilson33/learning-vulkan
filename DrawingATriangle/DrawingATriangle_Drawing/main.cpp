@@ -198,6 +198,8 @@ private:
             glfwPollEvents();
             drawFrame();
         }
+        // All of the drawFrame ops are async, meaning when we exit the loop drawing and presentation might still be going on, so wait until the logical device finishes operations before exiting mainLoop and destroying the window.
+        vkDeviceWaitIdle(device);
     }
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
@@ -231,6 +233,7 @@ private:
         // Destroy the swap chain before you destroy the logical device (since the swap chain is used by the logical device).
         vkDestroySwapchainKHR(device, swapChain, nullptr);
 
+        // Destroy the logical device which interacts with the chosen physical device. 
         // Destroy the logical device which interacts with the chosen physical device. 
         vkDestroyDevice(device, nullptr);
 
@@ -690,7 +693,7 @@ private:
 
         // Retrieve queue handles for the graphics and presentation queue families. The params are the logical device, the queue family, the queue index (set to 0 because only creating 1 handle from this family), and pointer to store the queue handle in.
         vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
-        vkGetDeviceQueue(device, indices.presentationFamily.value(), 0, &graphicsQueue);
+        vkGetDeviceQueue(device, indices.presentationFamily.value(), 0, &presentationQueue);
 
     }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -972,6 +975,12 @@ private:
         // The first 2 fields specify the indices of the dependency and the dependent subpass. Using the special value below refers to the implicit subpass before or after the render pass depending on whether you set it as the src or dst. 0 refers to our subpass, which is the first and only one. Setting these values means we are using the implicit subpass before, and the destination is our subpass.
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
+        // Specify the operations to wait on and in which stages they occur. We need to wait for the swap chain to finish reading from the image before we can access it.
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        // These settings will stop the transition from happening until it's actually necessary and allowed. Basically telling the writing of the color attachment stage to wait for the stage specified in srcStageMask
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
 
         // Now that the attachment and a basic subpass referencing it are made, can create the render pass itself.
@@ -981,6 +990,9 @@ private:
         renderPassInfo.pAttachments = &colorAttachment;
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpass;
+        // Specify the subpass dependencies.
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
 
         if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
             throw std::runtime_error("ERROR! Failed to create render pass!");
@@ -1454,9 +1466,22 @@ private:
             throw std::runtime_error("ERROR! Failed to submit draw command buffer!");
         }
         
+        // 3) Submit the result back to the swap chain and have it eventually show up on the screen.
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType               = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        // Specify which sempahores to wait on before presentation can happen.
+        presentInfo.waitSemaphoreCount  = 1;
+        presentInfo.pWaitSemaphores     = signalSemaphores;
+        // Specify the swap chains to present images to and the index of the image for each swap chain
+        VkSwapchainKHR swapChains[]     = { swapChain };
+        presentInfo.swapchainCount      = 1;
+        presentInfo.pSwapchains         = swapChains;
+        presentInfo.pImageIndices       = &imageIndex;
+        // Allows you to specify an array of VkResult values to check for every individual swap chain if presentation was successful. Not necessary if using 1 swap chain b/c you can just check the return val of the present func.
+        presentInfo.pResults            = nullptr;      // Optional
 
-
-
+        // FINALLY! Submit the request to present an image to the swap chain.
+        vkQueuePresentKHR(presentationQueue, &presentInfo);
     }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
