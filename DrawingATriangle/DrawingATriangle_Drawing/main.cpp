@@ -16,6 +16,8 @@
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+// How many frames can be processed in parallel by the GPU at once.
+const int MAX_FRAMES_IN_FLIGHT = 2;
 
 // Add two configuration variables to specify the layers to enable...
 const std::vector<const char*> validationLayers = {
@@ -113,9 +115,14 @@ private:
     // Store a command buffer for every image in the swap chain.
     std::vector<VkCommandBuffer> commandBuffers;
 
-    // We need one sem to signal that an image has been gotten and is ready for rendering, and another to signal that rendering has finisehed and presentation can happen.
-    VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
+    // We need one sem to signal that an image has been gotten and is ready for rendering, and another to signal that rendering has finisehed and presentation can happen for each frame in-flight.
+    std::vector<VkSemaphore> imageAvailableSemaphores;
+    std::vector<VkSemaphore> renderFinishedSemaphores;
+    // To perform CPU-GPU sync, need to use fences to make sure CPU isn't submitting more than MAX_FRAMES_IN_FLIGHT.
+    std::vector<VkFence> inFlightFences;
+    // If MAX_FRAMES_IN_FLIGHT > # of swap chain images, or vkAcquireNextImageKHR returns images out-of-order, then we may start rendering to a swap chain image that's already in flight, so need to keep track of each swap chain image if a frame in flight is currently using it.
+    std::vector<VkFence> imagesInFlight;
+    size_t currentFrame = 0;
 
 
 
@@ -185,9 +192,9 @@ private:
         createCommandBuffers();
         std::cout << "\n{########## Command buffers created. ##########}\n";
 
-        // Create semaphores to sync queue operations of draw commands and presentation.
-        createSemaphores();
-        std::cout << "\n{########## Semaphores created. ##########}\n";
+        // Create semaphores to sync queue operations of draw commands and presentation. And create fences to sync up the CPU and GPU.
+        createSyncObjects();
+        std::cout << "\n{########## Semaphores and fences created. ##########}\n";
     }
 
 
@@ -204,9 +211,12 @@ private:
 
     // Deallocate resources. In C++ it's possible to perform automatic resource management like using RAII, but in this tutorial, it will be explicitly done.
     void cleanup() {
-        // Destroy the semaphores for syncing operations across command queues.
-        vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
-        vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+        // Destroy the semaphores for syncing operations across command queues and the fences for syncing CPU and GPU workloads.
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+            vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+            vkDestroyFence(device, inFlightFences[i], nullptr);
+        }
 
         // Destroy the command pool which holds the command buffers.
         vkDestroyCommandPool(device, commandPool, nullptr);
@@ -1426,29 +1436,55 @@ private:
     // ~~~~~~~~~~~~~~~~~~~~~ Semaphores & Drawing ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    // Create semaphores for syncing up operations across command queues (drawing and presentation)
-    void createSemaphores() {
+    // Create semaphores for syncing up operations across command queues (drawing and presentation) for each frame. Create fences for syncing up the CPU and GPU (so CPU isn't submitting too much/little work). Also create fences to make sure a swap chain image isn't rendered to if it's already in-flight
+    void createSyncObjects() {
+        imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+        // Explicitly initialize to no fence since initially not a single frame is using a swap chain image.
+        imagesInFlight.resize(swapChainImages.size(), VK_NULL_HANDLE);
+
         VkSemaphoreCreateInfo semaphoreInfo{};
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        
+        // Fences are created in the unsignaled state, so vkWaitForFences in drawFrame() will wait forever if we haven't used the fence before, so for the first fence that is created, init to the signaled state as if we renderws an initial frame that finished.
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS || vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS) {
-            throw std::runtime_error("ERROR! Failed to create semaphores!");
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS || vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) || vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+                throw std::runtime_error("ERROR! Failed to create synchronization objects for a frame!");
+            }
         }
     }
 
     // Get image from swap chain, exec the command buffer with that image, and return the image to the swap chain for presentation
     void drawFrame() {
+        // 0) Wait for the previous frame to be finished and for it to signal the fence before continuing. This can happen if this func is called before the command buffer finishes executing for a frame and the currentFrame hasn't been updated at the end of the func yet.
+
+        // Takes an array of fences and waits for either or all of them to be signaled before returning. VK_TRUE means wait for all, but we're only passing in a single fence. Disable the timeout with UINT64_MAX
+        vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+
         // 1) Acquire image from swap chain. 
 
         // The third param is the timeout in ns for an image to become available. Using the max value of 64 bit unsigned int disables the timeout. The 4th and 5th params are for semaphores and fences. The last param refers to a variable to output the index of a VkImage in the swapChainImages array. This helps with picking the right command buffer.
         uint32_t imageIndex;
-        vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+        // 1.5) Check if a previous frame is rendering to this swap chain image already
+        if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+            vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+        }
+        // Mark this swap chain image as being in use by this frame by using the same fence that the inFlightFences uses.
+        imagesInFlight[imageIndex] = inFlightFences[currentFrame];
+
 
         // 2) Specify and submit the command buffer
         VkSubmitInfo submitInfo{};
         submitInfo.sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         // First 3 params specify which sems to wait on before exec begins and which stages of the pipeline to wait. We want to wait with writing colors to the image until it's ready, so we specify the stage of the pipeline that writes to the color attachment. Each entry in waitStages corresponds to the sem with same index in pWaitSemaphores.
-        VkSemaphore waitSemaphores[]        = { imageAvailableSemaphore };
+        VkSemaphore waitSemaphores[]        = { imageAvailableSemaphores[currentFrame] };
         VkPipelineStageFlags waitStages[]   = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
         submitInfo.waitSemaphoreCount       = 1;
         submitInfo.pWaitSemaphores          = waitSemaphores;
@@ -1457,12 +1493,15 @@ private:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
         // Specify which sem to signal once the command bufs have finished.
-        VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+        VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        // Then, submit the command buffer. Last param is for an optional fence.
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        // Unlike semaphores, must manually restore fence to unsignaled state.
+        vkResetFences(device, 1, &inFlightFences[currentFrame]);
+
+        // Then, submit the command buffer. Semaphore and fence will be signaled when command buffer finishes executing.
+        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("ERROR! Failed to submit draw command buffer!");
         }
         
@@ -1482,6 +1521,9 @@ private:
 
         // FINALLY! Submit the request to present an image to the swap chain.
         vkQueuePresentKHR(presentationQueue, &presentInfo);
+
+        // Advance to the next frame.
+        currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
